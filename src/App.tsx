@@ -86,7 +86,7 @@ export default function App() {
   const viewerRef = useRef<PannellumViewer | null>(null);
   const [routeWorldId, setRouteWorldId] = useState<string | null>(() => getRouteWorldId());
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
-  const [status, setStatus] = useState("Ready.");
+  const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
   const [galleryWorlds, setGalleryWorlds] = useState<WorldSummary[]>([]);
   const [galleryLoading, setGalleryLoading] = useState(false);
@@ -127,7 +127,7 @@ export default function App() {
     setActiveNode(null);
     setWorldState({ worldId: null, nodeId: null });
     setObjectiveSession(null);
-    setStatus("Ready.");
+    setStatus("");
   }
 
   async function loadGallery() {
@@ -501,7 +501,26 @@ export default function App() {
     return (
       <main className="home-page">
         <section className="home-hero">
-          <h1>Clickscape</h1>
+          <div className="hero-card hero-card-left" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+          </div>
+          <div className="hero-card hero-card-right" aria-hidden="true">
+            <span />
+            <span />
+          </div>
+          <div className="hero-card hero-card-bottom" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+          </div>
+          <h1>
+            <span>Clickscape</span>
+            generate, click,
+            <br />
+            and explore
+          </h1>
           <form
             className="prompt-bar"
             onSubmit={(event) => {
@@ -529,7 +548,7 @@ export default function App() {
               Surprise Me
             </button>
           </form>
-          <div className="status">{status}</div>
+          {status && <div className="status">{status}</div>}
         </section>
 
         <section className="world-gallery">
