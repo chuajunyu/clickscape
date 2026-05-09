@@ -88,6 +88,7 @@ export default function App() {
   const [objectiveSession, setObjectiveSession] = useState<ObjectiveSession | null>(null);
   const [objectiveLoading, setObjectiveLoading] = useState(false);
   const [objectiveError, setObjectiveError] = useState("");
+  const lastAutoCheckKeyRef = useRef<string | null>(null);
   /** True once this pointer session moved past the click threshold (pan / look drag). */
   const panGripRef = useRef(false);
   const pointerStartRef = useRef<PointerStart | null>(null);
@@ -118,6 +119,7 @@ export default function App() {
     try {
       const data = await startWorldRequest(prompt);
       renderPanorama(data);
+      await generateObjectiveForNode(data, prompt);
       setStatus("World ready. Drag to look around, click a target to enter it.");
       await loadHistory();
     } catch (error) {
@@ -135,6 +137,7 @@ export default function App() {
       const data = await getWorldNode(worldId);
       renderPanorama(data);
       if (worldPrompt) setPrompt(worldPrompt);
+      await generateObjectiveForNode(data, worldPrompt || prompt);
       setStatus("World loaded. Drag to look around, click a target to enter it.");
     } catch (error) {
       setStatus(`Error: ${getErrorMessage(error)}`);
@@ -176,44 +179,22 @@ export default function App() {
     }
   }
 
-  async function reloadCurrentNode() {
-    if (!worldState.worldId || !worldState.nodeId) {
-      setStatus("Start or open a world first.");
-      return;
-    }
-
-    setBusy(true);
-    setStatus("Reloading current node...");
-    try {
-      const data = await getWorldNode(worldState.worldId, worldState.nodeId);
-      renderPanorama(data);
-      setStatus("Reload complete.");
-    } catch (error) {
-      setStatus(`Error: ${getErrorMessage(error)}`);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function generateObjective() {
-    if (!activeNode || !worldState.worldId || !worldState.nodeId) {
-      setObjectiveError("Start or open a world first.");
-      return;
-    }
+  async function generateObjectiveForNode(node: NodePayload, worldPrompt: string) {
     setObjectiveLoading(true);
     setObjectiveError("");
     try {
       const target = await generateHiddenTarget({
-        worldPrompt: prompt,
-        currentContext: activeNode.contextDescription || activeNode.promptUsed || prompt,
-        currentLocation: activeNode.contextLocation || prompt,
+        worldPrompt,
+        currentContext: node.contextDescription || node.promptUsed || worldPrompt,
+        currentLocation: node.contextLocation || worldPrompt,
       });
       setObjectiveSession({
         target,
         solved: false,
-        generatedFor: { worldId: worldState.worldId, nodeId: worldState.nodeId },
+        generatedFor: { worldId: node.worldId, nodeId: node.nodeId },
         lastCheck: null,
       });
+      lastAutoCheckKeyRef.current = null;
     } catch (error) {
       setObjectiveError(getErrorMessage(error));
     } finally {
@@ -221,17 +202,21 @@ export default function App() {
     }
   }
 
-  async function checkObjective() {
+  async function checkObjective(options?: { auto?: boolean; checkKey?: string }) {
+    const isAuto = options?.auto ?? false;
     if (!objectiveSession) {
-      setObjectiveError("Generate a hidden target first.");
+      if (!isAuto) setObjectiveError("Generate a hidden target first.");
       return;
     }
     if (!activeNode) {
-      setObjectiveError("Start or open a world first.");
+      if (!isAuto) setObjectiveError("Start or open a world first.");
       return;
     }
     setObjectiveLoading(true);
     setObjectiveError("");
+    if (options?.checkKey) {
+      lastAutoCheckKeyRef.current = options.checkKey;
+    }
     try {
       const result = await checkHiddenTargetSatisfied({
         hiddenTarget: objectiveSession.target,
@@ -250,6 +235,10 @@ export default function App() {
       );
     } catch (error) {
       setObjectiveError(getErrorMessage(error));
+      if (options?.checkKey) {
+        // Allow retry for this node if the previous auto-check failed.
+        lastAutoCheckKeyRef.current = null;
+      }
     } finally {
       setObjectiveLoading(false);
     }
@@ -297,6 +286,13 @@ export default function App() {
       setViewerPanDragging(false);
     }
   }, [busy, worldState.worldId]);
+
+  useEffect(() => {
+    if (!objectiveSession || objectiveSession.solved || !activeNode || objectiveLoading) return;
+    const checkKey = `${activeNode.worldId}:${activeNode.nodeId}:${objectiveSession.target.objectiveLabel}`;
+    if (lastAutoCheckKeyRef.current === checkKey) return;
+    void checkObjective({ auto: true, checkKey });
+  }, [activeNode, objectiveLoading, objectiveSession]);
 
   function shouldIgnorePointerTarget(target: EventTarget | null): boolean {
     if (!(target instanceof Element)) return false;
@@ -374,37 +370,22 @@ export default function App() {
               <button disabled={busy} onClick={startWorld}>
                 Start World
               </button>
-              <button className="secondary" disabled={busy} onClick={reloadCurrentNode}>
-                Reload Node
-              </button>
             </div>
           </section>
 
           <div className="status">{status}</div>
 
           <section>
-            <div className="history-head">
-              <h2 className="section-title">Objective</h2>
-              <button
-                className="secondary compact"
-                disabled={busy || objectiveLoading || !worldState.worldId}
-                onClick={generateObjective}
-              >
-                {objectiveSession ? "New Target" : "Generate Hidden Target"}
-              </button>
-            </div>
+            <h2 className="section-title">Objective</h2>
             {!objectiveSession && (
               <div className="placeholder">
-                Generate a hidden target for this session. It stays separate from world generation.
+                Objective will be generated automatically when a world is started or opened.
               </div>
             )}
             {objectiveSession && (
               <div className="objective-card">
                 <div>
                   <strong>Target:</strong> {objectiveSession.target.objectiveLabel}
-                </div>
-                <div>
-                  <strong>Clue:</strong> {objectiveSession.target.clue}
                 </div>
                 <div className="meta">
                   <span>{objectiveSession.solved ? "Solved" : "Unsolved"}</span>
@@ -421,15 +402,6 @@ export default function App() {
                 )}
               </div>
             )}
-            <div className="button-row">
-              <button
-                className="secondary"
-                disabled={busy || objectiveLoading || !objectiveSession || !worldState.worldId}
-                onClick={checkObjective}
-              >
-                Check Target
-              </button>
-            </div>
             {objectiveLoading && <div className="placeholder">Objective request in progress...</div>}
             {!!objectiveError && <div className="placeholder">Objective error: {objectiveError}</div>}
           </section>

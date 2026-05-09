@@ -40,7 +40,6 @@ export type NodePayload = {
 
 export type HiddenTarget = {
   objectiveLabel: string;
-  clue: string;
   acceptanceCriteria: string;
 };
 
@@ -418,9 +417,8 @@ function buildHiddenTargetInstruction({
     `Current location: ${compactLocation(currentLocation)}`,
     "The objective must be semantically reachable by exploring this world in a few steps.",
     "The objective must be visually identifiable from an image.",
-    "Return strict JSON only with keys: objectiveLabel, clue, acceptanceCriteria.",
+    "Return strict JSON only with keys: objectiveLabel, acceptanceCriteria.",
     "objectiveLabel must be 3-10 words.",
-    "clue must be a short hint and must not repeat objectiveLabel verbatim.",
     "acceptanceCriteria must describe what evidence should count as a match.",
   ].join("\n");
 }
@@ -437,7 +435,6 @@ function buildTargetSatisfactionInstruction({
   return [
     "You are validating whether a panorama image satisfies a hidden objective.",
     `Objective label: ${hiddenTarget.objectiveLabel}`,
-    `Clue: ${hiddenTarget.clue}`,
     `Acceptance criteria: ${hiddenTarget.acceptanceCriteria}`,
     `Current context: ${compactDescription(currentContext)}`,
     `Current location: ${compactLocation(currentLocation)}`,
@@ -464,10 +461,6 @@ function parseHiddenTarget(rawText: string): HiddenTarget {
     .trim()
     .replace(/\s+/g, " ")
     .slice(0, 80);
-  const clue = String(parsed.clue ?? "")
-    .trim()
-    .replace(/\s+/g, " ")
-    .slice(0, 180);
   const acceptanceCriteria = String(parsed.acceptanceCriteria ?? "")
     .trim()
     .replace(/\s+/g, " ")
@@ -477,7 +470,6 @@ function parseHiddenTarget(rawText: string): HiddenTarget {
   }
   return {
     objectiveLabel,
-    clue: clue || "Look for a visually distinct object or area tied to the world theme.",
     acceptanceCriteria:
       acceptanceCriteria || "The image should clearly depict the objective or a direct visual equivalent.",
   };
@@ -683,7 +675,7 @@ async function generateImage(prompt: string): Promise<string> {
       prompt,
       n: 1,
       size: "1024x640",
-      quality: "high",
+      quality: "low",
       output_format: "png",
     }),
   });
