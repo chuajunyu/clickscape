@@ -262,6 +262,129 @@ button:disabled {
   pointer-events: none;
 }
 
+.viewer-back-button {
+  position: absolute;
+  left: 18px;
+  bottom: 18px;
+  z-index: 20;
+  padding: 9px 12px;
+  border-radius: 8px;
+  background: rgba(10, 13, 17, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(8px);
+}
+
+.entry-hotspot {
+  width: 28px;
+  height: 28px;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.entry-hotspot-marker {
+  position: relative;
+  display: block;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #f7f9ff;
+  border: 3px solid #2377ef;
+  box-shadow:
+    0 0 0 3px rgba(10, 13, 17, 0.65),
+    0 8px 20px rgba(0, 0, 0, 0.35);
+  transform: translate(-50%, -50%);
+  pointer-events: auto;
+  z-index: 1;
+}
+
+.entry-hotspot-marker::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #2377ef;
+  transform: translate(-50%, -50%);
+}
+
+.entry-hotspot-label {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 10px);
+  z-index: 2147483647;
+  max-width: 220px;
+  width: max-content;
+  padding: 7px 9px;
+  border-radius: 6px;
+  color: #f7f9ff;
+  background: rgba(10, 13, 17, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.38);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.25;
+  text-align: center;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 4px);
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
+}
+
+.entry-hotspot-label::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  width: 8px;
+  height: 8px;
+  background: rgba(10, 13, 17, 0.92);
+  border-right: 1px solid rgba(255, 255, 255, 0.18);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.18);
+  transform: translate(-50%, -4px) rotate(45deg);
+}
+
+.entry-hotspot:hover .entry-hotspot-label,
+.entry-hotspot:focus-visible .entry-hotspot-label,
+.entry-hotspot-marker:hover .entry-hotspot-label,
+.entry-hotspot-marker:focus-visible .entry-hotspot-label {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.loading-hotspot {
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+.loading-hotspot-spinner {
+  display: block;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 4px solid rgba(255, 255, 255, 0.42);
+  border-top-color: #5aa7ff;
+  background: rgba(10, 13, 17, 0.48);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.42);
+  animation: hotspot-spin 850ms linear infinite;
+  transform-origin: center;
+  translate: -50% -50%;
+  pointer-events: none;
+}
+
+@keyframes hotspot-spin {
+  to {
+    rotate: 360deg;
+  }
+}
+
 .hud {
   display: flex;
   flex-wrap: wrap;

@@ -35,7 +35,15 @@ export type NodePayload = {
   promptUsed: string;
   contextDescription: string;
   contextLocation: string;
+  entries: NodeEntry[];
   target: TargetMetadata | null;
+};
+
+export type NodeEntry = {
+  nodeId: string;
+  targetLabel: string;
+  pitch: number;
+  yaw: number;
 };
 
 export type HiddenTarget = {
@@ -83,6 +91,14 @@ type WorldNode = {
   legacy?: LegacyWorldNode;
 };
 
+type WorldEdge = {
+  node_id: string;
+  parent_id: string;
+  pitch: number;
+  yaw: number;
+  target_label: string;
+};
+
 type World = {
   world_id: string;
   prompt: string;
@@ -90,7 +106,7 @@ type World = {
   created_at: string;
   grid?: { movement: string };
   nodes: Record<string, WorldNode | LegacyWorldNode>;
-  edges?: Record<string, string>;
+  edges?: Record<string, string | WorldEdge>;
 };
 
 type OpenAIImageResponse = {
@@ -266,6 +282,10 @@ function isGraphNode(node: WorldNode | LegacyWorldNode | undefined): node is Wor
   return !!node && typeof (node as WorldNode).id === "string";
 }
 
+function isWorldEdge(edge: string | WorldEdge | undefined): edge is WorldEdge {
+  return !!edge && typeof edge === "object" && typeof edge.node_id === "string";
+}
+
 function readWorldsFromLocalStorage(): World[] {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(STORAGE_KEY) || "[]") as unknown;
@@ -322,6 +342,38 @@ function normalizeWorld(world: World): World {
   }
 
   return nextWorld;
+}
+
+function edgeNodeId(edge: string | WorldEdge): string {
+  return isWorldEdge(edge) ? edge.node_id : edge;
+}
+
+function entriesForNode(world: World, parentNodeId: string): NodeEntry[] {
+  return Object.entries(world.edges ?? {}).flatMap(([edgeKey, edge]) => {
+    const nodeId = edgeNodeId(edge);
+    const node = world.nodes[nodeId];
+    if (!isGraphNode(node)) return [];
+    if (isWorldEdge(edge) && edge.parent_id !== parentNodeId) return [];
+
+    const prefix = `${parentNodeId}@`;
+    if (!isWorldEdge(edge) && !edgeKey.startsWith(prefix)) return [];
+
+    const [pitchText, yawText] = edgeKey.slice(prefix.length).split(",");
+    const pitch = isWorldEdge(edge) ? edge.pitch : Number(pitchText);
+    const yaw = isWorldEdge(edge) ? edge.yaw : Number(yawText);
+    if (!Number.isFinite(pitch) || !Number.isFinite(yaw)) return [];
+
+    return [
+      {
+        nodeId,
+        targetLabel: isWorldEdge(edge)
+          ? edge.target_label
+          : node.target?.targetLabel ?? "Saved entry",
+        pitch,
+        yaw,
+      },
+    ];
+  });
 }
 
 async function readWorlds(): Promise<World[]> {
@@ -751,6 +803,7 @@ async function nodePayload(world: World, nodeId: string, cacheHit: boolean): Pro
     promptUsed: node.prompt,
     contextDescription: node.description,
     contextLocation: node.location,
+    entries: entriesForNode(world, nodeId),
     target: node.target,
   };
 }
@@ -829,9 +882,9 @@ export async function enterTarget({
   if (!world) throw new Error("World not found");
 
   const edgeKey = clickEdgeKey(parentNodeId, pitch, yaw);
-  const existingNodeId = world.edges?.[edgeKey];
-  if (existingNodeId && isGraphNode(world.nodes[existingNodeId])) {
-    return nodePayload(world, existingNodeId, true);
+  const existingEdge = world.edges?.[edgeKey];
+  if (existingEdge && isGraphNode(world.nodes[edgeNodeId(existingEdge)])) {
+    return nodePayload(world, edgeNodeId(existingEdge), true);
   }
 
   const currentNode = world.nodes[parentNodeId];
@@ -874,7 +927,16 @@ export async function enterTarget({
       quantizedYaw,
     },
   };
-  world.edges = { ...(world.edges ?? {}), [edgeKey]: nodeId };
+  world.edges = {
+    ...(world.edges ?? {}),
+    [edgeKey]: {
+      node_id: nodeId,
+      parent_id: parentNodeId,
+      pitch: quantizedPitch,
+      yaw: quantizedYaw,
+      target_label: targetLabel,
+    },
+  };
   await putImage(imageKey(world.world_id, nodeId), imageUrl);
   await upsertWorld(world);
 
@@ -887,6 +949,7 @@ export async function enterTarget({
     promptUsed: destination.prompt,
     contextDescription: destination.description,
     contextLocation: destination.location,
+    entries: entriesForNode(world, nodeId),
     target: world.nodes[nodeId].target ?? null,
   };
 }
