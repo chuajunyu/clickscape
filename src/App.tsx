@@ -86,7 +86,7 @@ export default function App() {
   const viewerRef = useRef<PannellumViewer | null>(null);
   const [routeWorldId, setRouteWorldId] = useState<string | null>(() => getRouteWorldId());
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
-  const [status, setStatus] = useState("Ready.");
+  const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
   const [galleryWorlds, setGalleryWorlds] = useState<WorldSummary[]>([]);
   const [galleryLoading, setGalleryLoading] = useState(false);
@@ -103,7 +103,6 @@ export default function App() {
   const [objectiveError, setObjectiveError] = useState("");
   const lastAutoCheckKeyRef = useRef<string | null>(null);
   const objectiveRequestIdRef = useRef(0);
-  /** True once this pointer session moved past the click threshold (pan / look drag). */
   const [loadingHotspot, setLoadingHotspot] = useState<{ id: string; pitch: number; yaw: number } | null>(
     null
   );
@@ -254,7 +253,6 @@ export default function App() {
     } catch (error) {
       setObjectiveError(getErrorMessage(error));
       if (options?.checkKey) {
-        // Allow retry for this node if the previous auto-check failed.
         lastAutoCheckKeyRef.current = null;
       }
     } finally {
@@ -321,6 +319,7 @@ export default function App() {
           generatedFor: { worldId: activeNode.worldId, nodeId: activeNode.nodeId },
           lastCheck: null,
         });
+        lastAutoCheckKeyRef.current = null;
       })
       .catch((error: unknown) => {
         if (requestId !== objectiveRequestIdRef.current) return;
@@ -508,7 +507,26 @@ export default function App() {
     return (
       <main className="home-page">
         <section className="home-hero">
-          <h1>Clickscape</h1>
+          <div className="hero-card hero-card-left" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+          </div>
+          <div className="hero-card hero-card-right" aria-hidden="true">
+            <span />
+            <span />
+          </div>
+          <div className="hero-card hero-card-bottom" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+          </div>
+          <h1>
+            <span>Clickscape</span>
+            generate, click,
+            <br />
+            and explore
+          </h1>
           <form
             className="prompt-bar"
             onSubmit={(event) => {
@@ -536,7 +554,7 @@ export default function App() {
               Surprise Me
             </button>
           </form>
-          <div className="status">{status}</div>
+          {status && <div className="status">{status}</div>}
         </section>
 
         <section className="world-gallery">
@@ -586,6 +604,13 @@ export default function App() {
           )}
           {!objectiveGenerating && !objectiveError && !objectiveSession && "Goal pending..."}
         </div>
+        <button
+          className="secondary compact"
+          disabled={busy || objectiveGenerating || !objectiveSession || !activeNode}
+          onClick={() => void checkObjective()}
+        >
+          Check Goal
+        </button>
       </div>
 
       <section className="world-viewer-shell">
