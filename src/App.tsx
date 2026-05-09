@@ -8,14 +8,31 @@ import {
   getWorldNode,
   type HiddenTarget,
   type HiddenTargetCheckResult,
+  type NodeEntry,
   type NodePayload,
-  startWorld as startWorldRequest,
   type WorldSummary,
+  startWorld as startWorldRequest,
 } from "./mockApi";
+
+type PannellumHotSpot = {
+  id?: string;
+  pitch: number;
+  yaw: number;
+  type?: "custom";
+  cssClass?: string;
+  createTooltipFunc?: (element: HTMLElement, args: unknown) => void;
+  createTooltipArgs?: unknown;
+  clickHandlerFunc?: (event: MouseEvent, args: unknown) => void;
+  clickHandlerArgs?: unknown;
+};
 
 type PannellumViewer = {
   destroy: () => void;
   mouseEventToCoords: (event: MouseEvent) => [number, number];
+  addHotSpot: (hotSpot: PannellumHotSpot) => void;
+  removeHotSpot: (hotSpotId: string) => void;
+  getPitch: () => number;
+  getYaw: () => number;
 };
 
 declare global {
@@ -32,6 +49,7 @@ declare global {
           pitch: number;
           yaw: number;
           hfov: number;
+          hotSpots?: PannellumHotSpot[];
         }
       ) => PannellumViewer;
     };
@@ -55,11 +73,9 @@ type ObjectiveSession = {
   lastCheck: HiddenTargetCheckResult | null;
 };
 
-function formatCreatedAt(value: string): string {
-  if (!value) return "unknown time";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "unknown time";
-  return date.toLocaleString();
+function getRouteWorldId() {
+  const path = window.location.pathname.replace(/^\/+|\/+$/g, "");
+  return path || null;
 }
 
 function getErrorMessage(error: unknown): string {
@@ -68,60 +84,82 @@ function getErrorMessage(error: unknown): string {
 
 export default function App() {
   const viewerRef = useRef<PannellumViewer | null>(null);
+  const [routeWorldId, setRouteWorldId] = useState<string | null>(() => getRouteWorldId());
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
   const [status, setStatus] = useState("Ready.");
   const [busy, setBusy] = useState(false);
-  const [historyLoading, setHistoryLoading] = useState(false);
-  const [historyError, setHistoryError] = useState("");
-  const [history, setHistory] = useState<WorldSummary[]>([]);
-  const [worldState, setWorldState] = useState<{
-    worldId: string | null;
-    nodeId: string | null;
-  }>({
+  const [galleryWorlds, setGalleryWorlds] = useState<WorldSummary[]>([]);
+  const [galleryLoading, setGalleryLoading] = useState(false);
+  const [worldState, setWorldState] = useState<{ worldId: string | null; nodeId: string | null }>({
     worldId: null,
     nodeId: null,
   });
-  const [cacheState, setCacheState] = useState("-");
   const [targetState, setTargetState] = useState("-");
   const [activeNode, setActiveNode] = useState<NodePayload | null>(null);
   const [viewerPanDragging, setViewerPanDragging] = useState(false);
   const [objectiveSession, setObjectiveSession] = useState<ObjectiveSession | null>(null);
-  const [objectiveLoading, setObjectiveLoading] = useState(false);
+  const [objectiveGenerating, setObjectiveGenerating] = useState(false);
+  const [objectiveChecking, setObjectiveChecking] = useState(false);
   const [objectiveError, setObjectiveError] = useState("");
   const lastAutoCheckKeyRef = useRef<string | null>(null);
+  const objectiveRequestIdRef = useRef(0);
   /** True once this pointer session moved past the click threshold (pan / look drag). */
+  const [loadingHotspot, setLoadingHotspot] = useState<{ id: string; pitch: number; yaw: number } | null>(
+    null
+  );
+  const viewOrientationRef = useRef({ pitch: 0, yaw: 0 });
   const panGripRef = useRef(false);
   const pointerStartRef = useRef<PointerStart | null>(null);
+
+  const isWorldPage = Boolean(routeWorldId);
 
   function renderPanorama(payload: NodePayload) {
     setActiveNode(payload);
     setWorldState({ worldId: payload.worldId, nodeId: payload.nodeId });
-    setCacheState(payload.cacheHit ? "hit" : "miss");
     setTargetState(payload.target?.targetLabel ?? "-");
   }
 
-  async function loadHistory() {
-    setHistoryLoading(true);
-    setHistoryError("");
+  function navigateToWorld(worldId: string) {
+    window.history.pushState({}, "", `/${worldId}`);
+    setRouteWorldId(worldId);
+  }
+
+  function navigateHome() {
+    window.history.pushState({}, "", "/");
+    setRouteWorldId(null);
+    setActiveNode(null);
+    setWorldState({ worldId: null, nodeId: null });
+    setObjectiveSession(null);
+    setObjectiveGenerating(false);
+    setObjectiveChecking(false);
+    setObjectiveError("");
+    setStatus("Ready.");
+  }
+
+  async function loadGallery() {
+    setGalleryLoading(true);
     try {
-      const data = await getWorldHistory();
-      setHistory(data.worlds);
+      const history = await getWorldHistory();
+      setGalleryWorlds(
+        history.worlds.filter((world) => world.node_count > 0 && Boolean(world.origin_image_url))
+      );
     } catch (error) {
-      setHistoryError(getErrorMessage(error));
+      setStatus(`Error loading worlds: ${getErrorMessage(error)}`);
     } finally {
-      setHistoryLoading(false);
+      setGalleryLoading(false);
     }
   }
 
-  async function startWorld() {
+  async function createWorld(worldPrompt: string) {
     setBusy(true);
-    setStatus("Starting world and loading origin node...");
+    setStatus("Starting world...");
     try {
-      const data = await startWorldRequest(prompt);
+      const data = await startWorldRequest(worldPrompt);
+      setPrompt(worldPrompt);
+      setObjectiveSession(null);
       renderPanorama(data);
-      await generateObjectiveForNode(data, prompt);
+      navigateToWorld(data.worldId);
       setStatus("World ready. Drag to look around, click a target to enter it.");
-      await loadHistory();
     } catch (error) {
       setStatus(`Error: ${getErrorMessage(error)}`);
     } finally {
@@ -129,21 +167,29 @@ export default function App() {
     }
   }
 
-  async function openWorld(worldId: string, worldPrompt: string) {
-    if (!worldId) return;
+  async function openNode(worldId: string, nodeId: string, label?: string) {
+    rememberCurrentOrientation();
     setBusy(true);
-    setStatus("Opening cached world...");
+    setStatus(label ? `Opening ${label}...` : "Opening saved entry...");
     try {
-      const data = await getWorldNode(worldId);
+      const data = await getWorldNode(worldId, nodeId);
       renderPanorama(data);
-      if (worldPrompt) setPrompt(worldPrompt);
-      await generateObjectiveForNode(data, worldPrompt || prompt);
-      setStatus("World loaded. Drag to look around, click a target to enter it.");
+      setStatus(label ? `Entered ${label}.` : "Saved entry loaded.");
     } catch (error) {
       setStatus(`Error: ${getErrorMessage(error)}`);
     } finally {
       setBusy(false);
     }
+  }
+
+  async function openStoredWorld(worldId: string) {
+    setObjectiveSession(null);
+    navigateToWorld(worldId);
+  }
+
+  async function goBackToParent() {
+    if (!worldState.worldId || !activeNode?.parentNodeId) return;
+    await openNode(worldState.worldId, activeNode.parentNodeId, "previous view");
   }
 
   async function enterClickedTarget(pitch: number, yaw: number) {
@@ -152,6 +198,7 @@ export default function App() {
       return;
     }
 
+    rememberCurrentOrientation();
     setBusy(true);
     setStatus("Inspecting target...");
     try {
@@ -167,38 +214,13 @@ export default function App() {
       });
       renderPanorama(data);
       setStatus(
-        data.target?.targetLabel
-          ? `Entered ${data.target.targetLabel}.`
-          : "Entered the clicked target."
+        data.target?.targetLabel ? `Entered ${data.target.targetLabel}.` : "Entered the clicked target."
       );
-      await loadHistory();
     } catch (error) {
       setStatus(`Error: ${getErrorMessage(error)}`);
     } finally {
+      setLoadingHotspot(null);
       setBusy(false);
-    }
-  }
-
-  async function generateObjectiveForNode(node: NodePayload, worldPrompt: string) {
-    setObjectiveLoading(true);
-    setObjectiveError("");
-    try {
-      const target = await generateHiddenTarget({
-        worldPrompt,
-        currentContext: node.contextDescription || node.promptUsed || worldPrompt,
-        currentLocation: node.contextLocation || worldPrompt,
-      });
-      setObjectiveSession({
-        target,
-        solved: false,
-        generatedFor: { worldId: node.worldId, nodeId: node.nodeId },
-        lastCheck: null,
-      });
-      lastAutoCheckKeyRef.current = null;
-    } catch (error) {
-      setObjectiveError(getErrorMessage(error));
-    } finally {
-      setObjectiveLoading(false);
     }
   }
 
@@ -212,7 +234,7 @@ export default function App() {
       if (!isAuto) setObjectiveError("Start or open a world first.");
       return;
     }
-    setObjectiveLoading(true);
+    setObjectiveChecking(true);
     setObjectiveError("");
     if (options?.checkKey) {
       lastAutoCheckKeyRef.current = options.checkKey;
@@ -226,11 +248,7 @@ export default function App() {
       });
       setObjectiveSession((previous) =>
         previous
-          ? {
-              ...previous,
-              solved: previous.solved || result.matched,
-              lastCheck: result,
-            }
+          ? { ...previous, solved: previous.solved || result.matched, lastCheck: result }
           : previous
       );
     } catch (error) {
@@ -240,13 +258,80 @@ export default function App() {
         lastAutoCheckKeyRef.current = null;
       }
     } finally {
-      setObjectiveLoading(false);
+      setObjectiveChecking(false);
     }
   }
 
   useEffect(() => {
-    void loadHistory();
+    const onPopState = () => setRouteWorldId(getRouteWorldId());
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
   }, []);
+
+  useEffect(() => {
+    if (!isWorldPage) void loadGallery();
+  }, [isWorldPage]);
+
+  useEffect(() => {
+    if (!routeWorldId) {
+      if (viewerRef.current) {
+        viewerRef.current.destroy();
+        viewerRef.current = null;
+      }
+      setActiveNode(null);
+      return;
+    }
+
+    let cancelled = false;
+    setBusy(true);
+    setStatus("Opening world...");
+    getWorldNode(routeWorldId)
+      .then((data) => {
+        if (cancelled) return;
+        renderPanorama(data);
+        setStatus("World loaded. Drag to look around, click a target to enter it.");
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) setStatus(`Error: ${getErrorMessage(error)}`);
+      })
+      .finally(() => {
+        if (!cancelled) setBusy(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [routeWorldId]);
+
+  useEffect(() => {
+    if (!activeNode || !isWorldPage || objectiveSession) return;
+    const requestId = objectiveRequestIdRef.current + 1;
+    objectiveRequestIdRef.current = requestId;
+    setObjectiveGenerating(true);
+    setObjectiveError("");
+    generateHiddenTarget({
+      worldPrompt: prompt,
+      currentContext: activeNode.contextDescription || activeNode.promptUsed || prompt,
+      currentLocation: activeNode.contextLocation || prompt,
+    })
+      .then((target) => {
+        if (requestId !== objectiveRequestIdRef.current) return;
+        setObjectiveSession({
+          target,
+          solved: false,
+          generatedFor: { worldId: activeNode.worldId, nodeId: activeNode.nodeId },
+          lastCheck: null,
+        });
+      })
+      .catch((error: unknown) => {
+        if (requestId !== objectiveRequestIdRef.current) return;
+        setObjectiveError(getErrorMessage(error));
+      })
+      .finally(() => {
+        if (requestId === objectiveRequestIdRef.current) {
+          setObjectiveGenerating(false);
+        }
+      });
+  }, [activeNode, isWorldPage, objectiveSession, prompt]);
 
   useEffect(() => {
     if (!activeNode) return undefined;
@@ -261,15 +346,43 @@ export default function App() {
       return undefined;
     }
 
+    const entryHotSpots: PannellumHotSpot[] = activeNode.entries.map((entry) => ({
+      id: `entry-${entry.nodeId}`,
+      pitch: entry.pitch,
+      yaw: entry.yaw,
+      type: "custom",
+      cssClass: "entry-hotspot",
+      createTooltipFunc: (element, args) => {
+        const hotspotEntry = args as NodeEntry;
+        element.setAttribute("aria-label", hotspotEntry.targetLabel);
+        const marker = document.createElement("span");
+        marker.className = "entry-hotspot-marker";
+        marker.tabIndex = 0;
+        const label = document.createElement("span");
+        label.className = "entry-hotspot-label";
+        label.textContent = hotspotEntry.targetLabel;
+        marker.appendChild(label);
+        element.appendChild(marker);
+      },
+      createTooltipArgs: entry,
+      clickHandlerFunc: (event, args) => {
+        event.stopPropagation();
+        const hotspotEntry = args as NodeEntry;
+        void openNode(activeNode.worldId, hotspotEntry.nodeId, hotspotEntry.targetLabel);
+      },
+      clickHandlerArgs: entry,
+    }));
+
     viewerRef.current = window.pannellum.viewer("panorama", {
       type: "equirectangular",
       panorama: activeNode.imageUrl,
       autoLoad: true,
       showZoomCtrl: true,
       showFullscreenCtrl: true,
-      pitch: 0,
-      yaw: 0,
+      pitch: viewOrientationRef.current.pitch,
+      yaw: viewOrientationRef.current.yaw,
       hfov: 100,
+      hotSpots: entryHotSpots,
     });
 
     return () => {
@@ -280,6 +393,39 @@ export default function App() {
     };
   }, [activeNode]);
 
+  function rememberCurrentOrientation() {
+    if (!viewerRef.current) return;
+    viewOrientationRef.current = {
+      pitch: viewerRef.current.getPitch(),
+      yaw: viewerRef.current.getYaw(),
+    };
+  }
+
+  useEffect(() => {
+    if (!viewerRef.current || !loadingHotspot) return undefined;
+
+    viewerRef.current.addHotSpot({
+      id: loadingHotspot.id,
+      pitch: loadingHotspot.pitch,
+      yaw: loadingHotspot.yaw,
+      type: "custom",
+      cssClass: "loading-hotspot",
+      createTooltipFunc: (element) => {
+        const spinner = document.createElement("span");
+        spinner.className = "loading-hotspot-spinner";
+        element.appendChild(spinner);
+      },
+    });
+
+    return () => {
+      try {
+        viewerRef.current?.removeHotSpot(loadingHotspot.id);
+      } catch {
+        // Pannellum may already have destroyed the hotspot with the viewer.
+      }
+    };
+  }, [loadingHotspot]);
+
   useEffect(() => {
     if (busy || !worldState.worldId) {
       panGripRef.current = false;
@@ -288,16 +434,18 @@ export default function App() {
   }, [busy, worldState.worldId]);
 
   useEffect(() => {
-    if (!objectiveSession || objectiveSession.solved || !activeNode || objectiveLoading) return;
+    if (!objectiveSession || objectiveSession.solved || !activeNode || objectiveChecking) return;
     const checkKey = `${activeNode.worldId}:${activeNode.nodeId}:${objectiveSession.target.objectiveLabel}`;
     if (lastAutoCheckKeyRef.current === checkKey) return;
     void checkObjective({ auto: true, checkKey });
-  }, [activeNode, objectiveLoading, objectiveSession]);
+  }, [activeNode, objectiveChecking, objectiveSession]);
 
   function shouldIgnorePointerTarget(target: EventTarget | null): boolean {
     if (!(target instanceof Element)) return false;
     return Boolean(
-      target.closest("button, a, textarea, input, select, .pnlm-controls, .pnlm-load-button")
+      target.closest(
+        "button, a, textarea, input, select, .pnlm-controls, .pnlm-load-button, .entry-hotspot, .loading-hotspot"
+      )
     );
   }
 
@@ -352,130 +500,121 @@ export default function App() {
       bubbles: true,
     });
     const [pitch, yaw] = viewerRef.current.mouseEventToCoords(mouseEvent);
+    setLoadingHotspot({ id: `loading-${window.crypto.randomUUID()}`, pitch, yaw });
     void enterClickedTarget(pitch, yaw);
   }
 
-  return (
-    <div className="app-shell">
-      <header className="topbar">
-        <h1>Grid Street-View 360 Explorer</h1>
-      </header>
-
-      <div className="layout">
-        <aside className="sidebar panel">
-          <section>
-            <h2 className="section-title">World Prompt</h2>
-            <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} />
-            <div className="button-row">
-              <button disabled={busy} onClick={startWorld}>
-                Start World
-              </button>
-            </div>
-          </section>
-
-          <div className="status">{status}</div>
-
-          <section>
-            <h2 className="section-title">Objective</h2>
-            {!objectiveSession && (
-              <div className="placeholder">
-                Objective will be generated automatically when a world is started or opened.
-              </div>
-            )}
-            {objectiveSession && (
-              <div className="objective-card">
-                <div>
-                  <strong>Target:</strong> {objectiveSession.target.objectiveLabel}
-                </div>
-                <div className="meta">
-                  <span>{objectiveSession.solved ? "Solved" : "Unsolved"}</span>
-                  <span>
-                    Generated at node {objectiveSession.generatedFor.nodeId}
-                  </span>
-                </div>
-                {objectiveSession.lastCheck && (
-                  <div className="objective-check-result">
-                    Last check:{" "}
-                    {objectiveSession.lastCheck.matched ? "match" : "no match"} (
-                    {objectiveSession.lastCheck.confidence}) - {objectiveSession.lastCheck.reason}
-                  </div>
-                )}
-              </div>
-            )}
-            {objectiveLoading && <div className="placeholder">Objective request in progress...</div>}
-            {!!objectiveError && <div className="placeholder">Objective error: {objectiveError}</div>}
-          </section>
-
-          <section>
-            <div className="history-head">
-              <h2 className="section-title">World History</h2>
-              <button className="secondary compact" disabled={busy} onClick={loadHistory}>
-                Refresh
-              </button>
-            </div>
-            <div className="history-list">
-              {historyLoading && <div className="placeholder">Loading cached worlds...</div>}
-              {!historyLoading && historyError && (
-                <div className="placeholder">Failed to load history: {historyError}</div>
-              )}
-              {!historyLoading && !historyError && history.length === 0 && (
-                <div className="placeholder">No cached worlds yet. Start your first world.</div>
-              )}
-              {!historyLoading &&
-                !historyError &&
-                history.map((world) => (
-                  <button
-                    className={`history-item ${
-                      world.world_id === worldState.worldId ? "active" : ""
-                    }`}
-                    key={world.world_id}
-                    onClick={() => openWorld(world.world_id, world.prompt)}
-                  >
-                    {world.origin_image_url && (
-                      <img
-                        className="history-thumb"
-                        src={world.origin_image_url}
-                        alt="World preview"
-                        loading="lazy"
-                      />
-                    )}
-                    <strong>{world.prompt_preview || "Untitled world"}</strong>
-                    <div className="meta">
-                      <span>{formatCreatedAt(world.created_at)}</span>
-                      <span>{world.node_count || 0} nodes</span>
-                    </div>
-                  </button>
-                ))}
-            </div>
-          </section>
-        </aside>
-
-        <main className="viewer-panel panel">
-          <div
-            className={`panorama-wrap ${worldState.worldId && !busy ? "clickable" : ""} ${
-              viewerPanDragging ? "viewer-pan-dragging" : ""
-            }`}
-            onPointerDown={handlePointerDown}
-            onPointerMoveCapture={handlePointerMove}
-            onPointerUp={handlePointerUp}
-            onPointerCancel={() => {
-              panGripRef.current = false;
-              setViewerPanDragging(false);
-              pointerStartRef.current = null;
+  if (!isWorldPage) {
+    return (
+      <main className="home-page">
+        <section className="home-hero">
+          <h1>Clickscape</h1>
+          <form
+            className="prompt-bar"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void createWorld(prompt);
             }}
           >
-            <div id="panorama" className={!worldState.worldId ? "empty" : ""} />
-            {!worldState.worldId && <div className="empty-message">Start or open a world.</div>}
-          </div>
+            <input
+              value={prompt}
+              onChange={(event) => setPrompt(event.target.value)}
+              placeholder="Describe a world to explore..."
+            />
+            <button disabled={busy} type="submit">
+              Generate
+            </button>
+            <button
+              className="secondary"
+              disabled={busy || galleryWorlds.length === 0}
+              type="button"
+              onClick={() => {
+                const choice = galleryWorlds[Math.floor(Math.random() * galleryWorlds.length)];
+                void openStoredWorld(choice.world_id);
+              }}
+            >
+              Surprise Me
+            </button>
+          </form>
+          <div className="status">{status}</div>
+        </section>
 
-          <div className="hud">
-            <div>World: {worldState.worldId ?? "-"}</div>
-            <div>Node: {worldState.nodeId ?? "-"}</div>
-            <div>Cache: {cacheState}</div>
-            <div>Target: {targetState}</div>
+        <section className="world-gallery">
+          <h2>Preset Games</h2>
+          <div className="gallery-grid">
+            {galleryWorlds.map((world) => (
+              <button
+                className="world-card"
+                disabled={busy}
+                key={world.world_id}
+                onClick={() => void openStoredWorld(world.world_id)}
+              >
+                {world.origin_image_url && <img alt="" src={world.origin_image_url} />}
+                <span className="world-card-overlay">
+                  <strong>{world.prompt_preview}</strong>
+                  <small>
+                    {world.node_count} {world.node_count === 1 ? "node" : "nodes"}
+                  </small>
+                </span>
+              </button>
+            ))}
           </div>
-        </main>
+          {!galleryLoading && galleryWorlds.length === 0 && (
+            <div className="placeholder">Generate a world to add it to the gallery.</div>
+          )}
+          {galleryLoading && <div className="placeholder">Loading saved worlds...</div>}
+        </section>
+      </main>
+    );
+  }
+
+  return (
+    <main className="world-page">
+      <div className="world-topbar">
+        <button className="secondary compact" disabled={busy} onClick={navigateHome}>
+          Worlds
+        </button>
+        <div className="goal-pill">
+          {objectiveGenerating && "Generating goal..."}
+          {objectiveError && `Goal error: ${objectiveError}`}
+          {objectiveSession && !objectiveGenerating && (
+            <>
+              <strong>Goal:</strong> {objectiveSession.target.objectiveLabel}
+              {objectiveSession.solved && <span> Solved</span>}
+              {objectiveChecking && <span> (checking...)</span>}
+            </>
+          )}
+          {!objectiveGenerating && !objectiveError && !objectiveSession && "Goal pending..."}
+        </div>
       </div>
-    </div>
+
+      <section className="world-viewer-shell">
+        <div
+          className={`panorama-wrap ${worldState.worldId && !busy ? "clickable" : ""} ${
+            viewerPanDragging ? "viewer-pan-dragging" : ""
+          }`}
+          onPointerDown={handlePointerDown}
+          onPointerMoveCapture={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={() => {
+            panGripRef.current = false;
+            setViewerPanDragging(false);
+            pointerStartRef.current = null;
+          }}
+        >
+          <div id="panorama" className={!worldState.worldId ? "empty" : ""} />
+          {!worldState.worldId && <div className="empty-message">Loading world...</div>}
+          {activeNode?.parentNodeId && (
+            <button className="viewer-back-button" disabled={busy} onClick={goBackToParent}>
+              Back
+            </button>
+          )}
+        </div>
+        <div className="world-status">
+          <span>{status}</span>
+          <span>Target: {targetState}</span>
+        </div>
+      </section>
+    </main>
   );
-}
+} 

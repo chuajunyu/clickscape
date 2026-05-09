@@ -10,9 +10,9 @@ const WORLD_DB_STORE = "worlds";
 const IMAGE_DB_VERSION = 2;
 const ORIGIN_NODE_ID = "origin";
 const CLICK_QUANTUM_DEGREES = 5;
+const GOAL_GENERATION_TIMEOUT_MS = 12000;
 
-export const DEFAULT_PROMPT =
-  "A high-quality 360 equirectangular image of a cozy college dorm room. Photorealistic.";
+export const DEFAULT_PROMPT = "";
 
 export type ClickTarget = {
   pitch: number;
@@ -35,7 +35,15 @@ export type NodePayload = {
   promptUsed: string;
   contextDescription: string;
   contextLocation: string;
+  entries: NodeEntry[];
   target: TargetMetadata | null;
+};
+
+export type NodeEntry = {
+  nodeId: string;
+  targetLabel: string;
+  pitch: number;
+  yaw: number;
 };
 
 export type HiddenTarget = {
@@ -83,6 +91,14 @@ type WorldNode = {
   legacy?: LegacyWorldNode;
 };
 
+type WorldEdge = {
+  node_id: string;
+  parent_id: string;
+  pitch: number;
+  yaw: number;
+  target_label: string;
+};
+
 type World = {
   world_id: string;
   prompt: string;
@@ -90,7 +106,7 @@ type World = {
   created_at: string;
   grid?: { movement: string };
   nodes: Record<string, WorldNode | LegacyWorldNode>;
-  edges?: Record<string, string>;
+  edges?: Record<string, string | WorldEdge>;
 };
 
 type OpenAIImageResponse = {
@@ -266,6 +282,10 @@ function isGraphNode(node: WorldNode | LegacyWorldNode | undefined): node is Wor
   return !!node && typeof (node as WorldNode).id === "string";
 }
 
+function isWorldEdge(edge: string | WorldEdge | undefined): edge is WorldEdge {
+  return !!edge && typeof edge === "object" && typeof edge.node_id === "string";
+}
+
 function readWorldsFromLocalStorage(): World[] {
   try {
     const parsed = JSON.parse(window.localStorage.getItem(STORAGE_KEY) || "[]") as unknown;
@@ -322,6 +342,38 @@ function normalizeWorld(world: World): World {
   }
 
   return nextWorld;
+}
+
+function edgeNodeId(edge: string | WorldEdge): string {
+  return isWorldEdge(edge) ? edge.node_id : edge;
+}
+
+function entriesForNode(world: World, parentNodeId: string): NodeEntry[] {
+  return Object.entries(world.edges ?? {}).flatMap(([edgeKey, edge]) => {
+    const nodeId = edgeNodeId(edge);
+    const node = world.nodes[nodeId];
+    if (!isGraphNode(node)) return [];
+    if (isWorldEdge(edge) && edge.parent_id !== parentNodeId) return [];
+
+    const prefix = `${parentNodeId}@`;
+    if (!isWorldEdge(edge) && !edgeKey.startsWith(prefix)) return [];
+
+    const [pitchText, yawText] = edgeKey.slice(prefix.length).split(",");
+    const pitch = isWorldEdge(edge) ? edge.pitch : Number(pitchText);
+    const yaw = isWorldEdge(edge) ? edge.yaw : Number(yawText);
+    if (!Number.isFinite(pitch) || !Number.isFinite(yaw)) return [];
+
+    return [
+      {
+        nodeId,
+        targetLabel: isWorldEdge(edge)
+          ? edge.target_label
+          : node.target?.targetLabel ?? "Saved entry",
+        pitch,
+        yaw,
+      },
+    ];
+  });
 }
 
 async function readWorlds(): Promise<World[]> {
@@ -421,6 +473,33 @@ function buildHiddenTargetInstruction({
     "objectiveLabel must be 3-10 words.",
     "acceptanceCriteria must describe what evidence should count as a match.",
   ].join("\n");
+}
+
+function presetHiddenTargetForWorld(worldPrompt: string): HiddenTarget | null {
+  const normalized = normalizePrompt(worldPrompt || "");
+  if (!normalized) return null;
+
+  if (normalized.includes("harvard")) {
+    return {
+      objectiveLabel: "Find the John Harvard statue",
+      acceptanceCriteria:
+        "The scene clearly shows a bronze seated statue in a Harvard Yard style courtyard, or a close visual equivalent.",
+    };
+  }
+
+  if (
+    normalized.includes("dorm room") ||
+    normalized.includes("dorm") ||
+    normalized.includes("college room")
+  ) {
+    return {
+      objectiveLabel: "Find a lit desk lamp",
+      acceptanceCriteria:
+        "The scene clearly shows a desk lamp turned on in a bedroom or study setup, or a close visual equivalent.",
+    };
+  }
+
+  return null;
 }
 
 function buildTargetSatisfactionInstruction({
@@ -751,6 +830,7 @@ async function nodePayload(world: World, nodeId: string, cacheHit: boolean): Pro
     promptUsed: node.prompt,
     contextDescription: node.description,
     contextLocation: node.location,
+    entries: entriesForNode(world, nodeId),
     target: node.target,
   };
 }
@@ -829,9 +909,9 @@ export async function enterTarget({
   if (!world) throw new Error("World not found");
 
   const edgeKey = clickEdgeKey(parentNodeId, pitch, yaw);
-  const existingNodeId = world.edges?.[edgeKey];
-  if (existingNodeId && isGraphNode(world.nodes[existingNodeId])) {
-    return nodePayload(world, existingNodeId, true);
+  const existingEdge = world.edges?.[edgeKey];
+  if (existingEdge && isGraphNode(world.nodes[edgeNodeId(existingEdge)])) {
+    return nodePayload(world, edgeNodeId(existingEdge), true);
   }
 
   const currentNode = world.nodes[parentNodeId];
@@ -874,7 +954,16 @@ export async function enterTarget({
       quantizedYaw,
     },
   };
-  world.edges = { ...(world.edges ?? {}), [edgeKey]: nodeId };
+  world.edges = {
+    ...(world.edges ?? {}),
+    [edgeKey]: {
+      node_id: nodeId,
+      parent_id: parentNodeId,
+      pitch: quantizedPitch,
+      yaw: quantizedYaw,
+      target_label: targetLabel,
+    },
+  };
   await putImage(imageKey(world.world_id, nodeId), imageUrl);
   await upsertWorld(world);
 
@@ -887,6 +976,7 @@ export async function enterTarget({
     promptUsed: destination.prompt,
     contextDescription: destination.description,
     contextLocation: destination.location,
+    entries: entriesForNode(world, nodeId),
     target: world.nodes[nodeId].target ?? null,
   };
 }
@@ -895,32 +985,58 @@ export async function generateHiddenTarget({
   worldPrompt,
   currentContext,
   currentLocation,
+  signal,
 }: {
   worldPrompt: string;
   currentContext: string;
   currentLocation: string;
+  signal?: AbortSignal;
 }): Promise<HiddenTarget> {
-  const response = await fetch(OPENAI_RESPONSES_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${getApiKey()}`,
-    },
-    body: JSON.stringify({
-      model: OPENAI_VISION_MODEL,
-      input: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "input_text",
-              text: buildHiddenTargetInstruction({ worldPrompt, currentContext, currentLocation }),
-            },
-          ],
-        },
-      ],
-    }),
-  });
+  const preset = presetHiddenTargetForWorld(worldPrompt);
+  if (preset) return preset;
+
+  const timeoutController = new AbortController();
+  const timeoutId = window.setTimeout(() => timeoutController.abort(), GOAL_GENERATION_TIMEOUT_MS);
+  const abortFromCaller = () => timeoutController.abort();
+
+  if (signal) {
+    if (signal.aborted) timeoutController.abort();
+    else signal.addEventListener("abort", abortFromCaller, { once: true });
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(OPENAI_RESPONSES_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${getApiKey()}`,
+      },
+      body: JSON.stringify({
+        model: OPENAI_VISION_MODEL,
+        input: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: buildHiddenTargetInstruction({ worldPrompt, currentContext, currentLocation }),
+              },
+            ],
+          },
+        ],
+      }),
+      signal: timeoutController.signal,
+    });
+  } catch (error) {
+    if (timeoutController.signal.aborted) {
+      throw new Error("Goal generation timed out. Try another scene or prompt.");
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+    signal?.removeEventListener("abort", abortFromCaller);
+  }
 
   const data = (await response.json().catch(() => ({}))) as OpenAIResponse;
   if (!response.ok) {
