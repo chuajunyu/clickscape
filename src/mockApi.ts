@@ -11,8 +11,7 @@ const IMAGE_DB_VERSION = 2;
 const ORIGIN_NODE_ID = "origin";
 const CLICK_QUANTUM_DEGREES = 5;
 
-export const DEFAULT_PROMPT =
-  "A high-quality 360 equirectangular image of a cozy college dorm room. Photorealistic.";
+export const DEFAULT_PROMPT = "";
 
 export type ClickTarget = {
   pitch: number;
