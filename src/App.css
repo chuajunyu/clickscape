@@ -327,7 +327,7 @@ input:focus-visible {
 
 .world-topbar {
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: auto 1fr;
   gap: 10px;
   align-items: center;
   z-index: 30;
@@ -354,12 +354,34 @@ input:focus-visible {
 .world-viewer-shell {
   min-height: 0;
   display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
   gap: 10px;
   padding: 10px;
   border-radius: 8px;
   background: rgba(22, 25, 30, 0.62);
   border: 1px solid var(--panel-border);
+}
+
+.goal-solved-banner {
+  display: grid;
+  gap: 2px;
+  padding: 14px 16px;
+  border-radius: 10px;
+  border: 1px solid rgba(69, 227, 132, 0.45);
+  background: linear-gradient(180deg, rgba(49, 187, 108, 0.36), rgba(28, 98, 62, 0.48));
+  box-shadow: 0 12px 26px rgba(17, 71, 45, 0.35);
+}
+
+.goal-solved-banner strong {
+  font-size: 24px;
+  font-family: var(--display-font);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.goal-solved-banner span {
+  color: #d6ffe6;
+  font-size: 14px;
 }
 
 .panorama-wrap {
@@ -418,6 +440,36 @@ input:focus-visible {
   gap: 12px;
   flex-wrap: wrap;
   border-radius: 8px;
+}
+
+.scene-history {
+  display: grid;
+  gap: 8px;
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: #d5dce9;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(10, 13, 17, 0.72);
+}
+
+.scene-history strong {
+  font-size: 13px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.scene-history-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.scene-history-chip {
+  border-radius: 999px;
+  padding: 5px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 12px;
 }
 
 .entry-hotspot {

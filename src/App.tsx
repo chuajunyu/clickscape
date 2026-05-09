@@ -68,9 +68,8 @@ type PointerStart = {
 
 type ObjectiveSession = {
   target: HiddenTarget;
-  solved: boolean;
-  generatedFor: { worldId: string; nodeId: string };
   lastCheck: HiddenTargetCheckResult | null;
+  solved: boolean;
 };
 
 function getRouteWorldId() {
@@ -98,6 +97,8 @@ export default function App() {
   const [activeNode, setActiveNode] = useState<NodePayload | null>(null);
   const [viewerPanDragging, setViewerPanDragging] = useState(false);
   const [objectiveSession, setObjectiveSession] = useState<ObjectiveSession | null>(null);
+  const [solvedGoalHistoryByScene, setSolvedGoalHistoryByScene] = useState<Record<string, HiddenTarget[]>>({});
+  const [recentSolvedGoalByScene, setRecentSolvedGoalByScene] = useState<Record<string, HiddenTarget | null>>({});
   const [objectiveGenerating, setObjectiveGenerating] = useState(false);
   const [objectiveChecking, setObjectiveChecking] = useState(false);
   const [objectiveError, setObjectiveError] = useState("");
@@ -111,8 +112,13 @@ export default function App() {
   const pointerStartRef = useRef<PointerStart | null>(null);
 
   const isWorldPage = Boolean(routeWorldId);
+  const currentSceneKey = activeNode ? `${activeNode.worldId}:${activeNode.nodeId}` : null;
+  const solvedGoalHistory = currentSceneKey ? solvedGoalHistoryByScene[currentSceneKey] ?? [] : [];
+  const recentSolvedGoal = (currentSceneKey && recentSolvedGoalByScene[currentSceneKey]) || null;
 
   function renderPanorama(payload: NodePayload) {
+    // Treat each loaded panorama as a fresh scene entry for auto goal checks.
+    lastAutoCheckKeyRef.current = null;
     setActiveNode(payload);
     setWorldState({ worldId: payload.worldId, nodeId: payload.nodeId });
     setTargetState(payload.target?.targetLabel ?? "-");
@@ -129,6 +135,8 @@ export default function App() {
     setActiveNode(null);
     setWorldState({ worldId: null, nodeId: null });
     setObjectiveSession(null);
+    setSolvedGoalHistoryByScene({});
+    setRecentSolvedGoalByScene({});
     setObjectiveGenerating(false);
     setObjectiveChecking(false);
     setObjectiveError("");
@@ -156,6 +164,8 @@ export default function App() {
       const data = await startWorldRequest(worldPrompt);
       setPrompt(worldPrompt);
       setObjectiveSession(null);
+      setSolvedGoalHistoryByScene({});
+      setRecentSolvedGoalByScene({});
       renderPanorama(data);
       navigateToWorld(data.worldId);
       setStatus("World ready. Drag to look around, click a target to enter it.");
@@ -183,6 +193,8 @@ export default function App() {
 
   async function openStoredWorld(worldId: string) {
     setObjectiveSession(null);
+    setSolvedGoalHistoryByScene({});
+    setRecentSolvedGoalByScene({});
     navigateToWorld(worldId);
   }
 
@@ -223,14 +235,11 @@ export default function App() {
     }
   }
 
-  async function checkObjective(options?: { auto?: boolean; checkKey?: string }) {
-    const isAuto = options?.auto ?? false;
+  async function checkObjective(options?: { checkKey?: string }) {
     if (!objectiveSession) {
-      if (!isAuto) setObjectiveError("Generate a hidden target first.");
       return;
     }
     if (!activeNode) {
-      if (!isAuto) setObjectiveError("Start or open a world first.");
       return;
     }
     setObjectiveChecking(true);
@@ -245,11 +254,22 @@ export default function App() {
         currentContext: activeNode.contextDescription || activeNode.promptUsed || prompt,
         currentLocation: activeNode.contextLocation || prompt,
       });
-      setObjectiveSession((previous) =>
-        previous
-          ? { ...previous, solved: previous.solved || result.matched, lastCheck: result }
-          : previous
-      );
+      if (result.matched && currentSceneKey) {
+        const solvedTarget = objectiveSession.target;
+        setObjectiveSession((previous) =>
+          previous ? { ...previous, lastCheck: result, solved: true } : previous
+        );
+        setSolvedGoalHistoryByScene((previous) => ({
+          ...previous,
+          [currentSceneKey]: [...(previous[currentSceneKey] ?? []), solvedTarget],
+        }));
+        setRecentSolvedGoalByScene((previous) => ({ ...previous, [currentSceneKey]: solvedTarget }));
+        setStatus(`Goal solved: ${solvedTarget.objectiveLabel}`);
+      } else if (currentSceneKey) {
+        setObjectiveSession((previous) =>
+          previous ? { ...previous, lastCheck: result } : previous
+        );
+      }
     } catch (error) {
       setObjectiveError(getErrorMessage(error));
       if (options?.checkKey) {
@@ -313,12 +333,7 @@ export default function App() {
     })
       .then((target) => {
         if (requestId !== objectiveRequestIdRef.current) return;
-        setObjectiveSession({
-          target,
-          solved: false,
-          generatedFor: { worldId: activeNode.worldId, nodeId: activeNode.nodeId },
-          lastCheck: null,
-        });
+        setObjectiveSession({ target, lastCheck: null, solved: false });
         lastAutoCheckKeyRef.current = null;
       })
       .catch((error: unknown) => {
@@ -436,7 +451,7 @@ export default function App() {
     if (!objectiveSession || objectiveSession.solved || !activeNode || objectiveChecking) return;
     const checkKey = `${activeNode.worldId}:${activeNode.nodeId}:${objectiveSession.target.objectiveLabel}`;
     if (lastAutoCheckKeyRef.current === checkKey) return;
-    void checkObjective({ auto: true, checkKey });
+    void checkObjective({ checkKey });
   }, [activeNode, objectiveChecking, objectiveSession]);
 
   function shouldIgnorePointerTarget(target: EventTarget | null): boolean {
@@ -604,16 +619,15 @@ export default function App() {
           )}
           {!objectiveGenerating && !objectiveError && !objectiveSession && "Goal pending..."}
         </div>
-        <button
-          className="secondary compact"
-          disabled={busy || objectiveGenerating || !objectiveSession || !activeNode}
-          onClick={() => void checkObjective()}
-        >
-          Check Goal
-        </button>
       </div>
 
       <section className="world-viewer-shell">
+        {recentSolvedGoal && (
+          <div className="goal-solved-banner">
+            <strong>Goal Solved</strong>
+            <span>{recentSolvedGoal.objectiveLabel}</span>
+          </div>
+        )}
         <div
           className={`panorama-wrap ${worldState.worldId && !busy ? "clickable" : ""} ${
             viewerPanDragging ? "viewer-pan-dragging" : ""
@@ -638,6 +652,19 @@ export default function App() {
         <div className="world-status">
           <span>{status}</span>
           <span>Target: {targetState}</span>
+        </div>
+        <div className="scene-history" aria-live="polite">
+          <strong>Solved goals in this scene:</strong>
+          {solvedGoalHistory.length === 0 && <span> none yet</span>}
+          {solvedGoalHistory.length > 0 && (
+            <div className="scene-history-list">
+              {solvedGoalHistory.map((entry, index) => (
+                <span key={`${entry.objectiveLabel}-${index}`} className="scene-history-chip">
+                  {entry.objectiveLabel}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       </section>
     </main>
