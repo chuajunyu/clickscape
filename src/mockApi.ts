@@ -12,6 +12,37 @@ const ORIGIN_NODE_ID = "origin";
 const CLICK_QUANTUM_DEGREES = 5;
 const GOAL_GENERATION_TIMEOUT_MS = 12000;
 
+const EASY_GOALS: HiddenTarget[] = [
+    { objectiveLabel: "Find a chair", difficulty: "easy", acceptanceCriteria: "A chair, stool, bench, or seat is clearly visible in the scene." },
+    { objectiveLabel: "Find a table", difficulty: "easy", acceptanceCriteria: "A table, desk, counter, or flat working/eating surface is visible." },
+    { objectiveLabel: "Find a lamp", difficulty: "easy", acceptanceCriteria: "A lamp, light fixture, lantern, or visible light source (not the sun) is present." },
+    { objectiveLabel: "Find a book", difficulty: "easy", acceptanceCriteria: "A book, notebook, journal, or bound volume is clearly visible." },
+    { objectiveLabel: "Find a plant", difficulty: "easy", acceptanceCriteria: "A potted plant, flowers in a vase, or indoor greenery is visible." },
+    { objectiveLabel: "Find a clock", difficulty: "easy", acceptanceCriteria: "A clock, watch, or time-telling device is visible on a wall, shelf, or surface." },
+    { objectiveLabel: "Find a pen or pencil", difficulty: "easy", acceptanceCriteria: "A pen, pencil, marker, or writing instrument is clearly visible." },
+    { objectiveLabel: "Find a cup or mug", difficulty: "easy", acceptanceCriteria: "A cup, mug, glass, or drinking vessel is visible." },
+    { objectiveLabel: "Find a window", difficulty: "easy", acceptanceCriteria: "A window or glass opening letting in outside light is visible." },
+    { objectiveLabel: "Find a door", difficulty: "easy", acceptanceCriteria: "A door, doorway, or entrance/exit is clearly visible." },
+    { objectiveLabel: "Find a picture frame", difficulty: "easy", acceptanceCriteria: "A framed picture, photo, painting, or wall-mounted artwork is visible." },
+    { objectiveLabel: "Find a rug or carpet", difficulty: "easy", acceptanceCriteria: "A rug, carpet, mat, or decorative floor covering is visible." },
+    { objectiveLabel: "Find a pillow or cushion", difficulty: "easy", acceptanceCriteria: "A pillow, cushion, or soft padded item on furniture is visible." },
+    { objectiveLabel: "Find a shelf", difficulty: "easy", acceptanceCriteria: "A shelf, bookshelf, or wall-mounted ledge holding items is visible." },
+    { objectiveLabel: "Find a bag or backpack", difficulty: "easy", acceptanceCriteria: "A bag, backpack, purse, satchel, or carried container is visible." },
+    { objectiveLabel: "Find a mirror", difficulty: "easy", acceptanceCriteria: "A mirror or reflective surface showing reflections is visible." },
+    { objectiveLabel: "Find papers or documents", difficulty: "easy", acceptanceCriteria: "Loose papers, documents, sheets, or printed pages are visible on a surface." },
+    { objectiveLabel: "Find a box or container", difficulty: "easy", acceptanceCriteria: "A box, crate, bin, or storage container is visible." },
+    { objectiveLabel: "Find a bottle", difficulty: "easy", acceptanceCriteria: "A bottle (water, wine, decorative, or any kind) is visible." },
+    { objectiveLabel: "Find stairs or steps", difficulty: "easy", acceptanceCriteria: "A staircase, steps, or ladder is visible in the scene." },
+    { objectiveLabel: "Find a sign", difficulty: "easy", acceptanceCriteria: "A sign, placard, notice board, or posted label is visible." },
+    { objectiveLabel: "Find a basket", difficulty: "easy", acceptanceCriteria: "A basket, woven container, or hamper is visible." },
+    { objectiveLabel: "Find a candle", difficulty: "easy", acceptanceCriteria: "A candle, candle holder, or wax light is visible." },
+    { objectiveLabel: "Find a vase", difficulty: "easy", acceptanceCriteria: "A vase, urn, or decorative vessel (with or without flowers) is visible." },
+    { objectiveLabel: "Find a curtain or drape", difficulty: "easy", acceptanceCriteria: "A curtain, drape, blind, or window covering is visible." },
+    { objectiveLabel: "Find a couch or sofa", difficulty: "easy", acceptanceCriteria: "A couch, sofa, loveseat, or multi-seat upholstered furniture is visible." },
+    { objectiveLabel: "Find a trash can", difficulty: "easy", acceptanceCriteria: "A trash can, waste bin, recycling bin, or garbage receptacle is visible." },
+    { objectiveLabel: "Find a coat or jacket", difficulty: "easy", acceptanceCriteria: "A coat, jacket, or outerwear garment is visible hanging or draped somewhere." },
+];
+
 export const DEFAULT_PROMPT = "";
 
 export type ClickTarget = {
@@ -46,10 +77,15 @@ export type NodeEntry = {
     yaw: number;
 };
 
+export type GoalDifficulty = "easy" | "medium" | "hard";
+
 export type HiddenTarget = {
     objectiveLabel: string;
     acceptanceCriteria: string;
+    difficulty: GoalDifficulty;
 };
+
+export type GoalSet = HiddenTarget[];
 
 export type HiddenTargetCheckResult = {
     matched: boolean;
@@ -510,43 +546,36 @@ function buildHiddenTargetInstruction({
     currentLocation: string;
 }): string {
     return [
-        "Generate a hidden objective for an exploratory 360 panorama game.",
+        "Generate exactly TWO hidden objectives for a 360 panorama exploration game.",
         `World theme: ${compactDescription(worldPrompt)}`,
         `Current view: ${compactDescription(currentContext)}`,
         `Current location: ${compactLocation(currentLocation)}`,
-        "The objective must be semantically reachable by exploring this world in a few steps.",
-        "The objective must be visually identifiable from an image.",
-        "Return strict JSON only with keys: objectiveLabel, acceptanceCriteria.",
-        "objectiveLabel must be 3-10 words.",
-        "acceptanceCriteria must describe what evidence should count as a match.",
+        "",
+        "MEDIUM objective (difficulty: \"medium\"):",
+        "Something likely to be found within 1-3 clicks of exploration in this world.",
+        "Must be a GENERIC category of object or scene feature, NOT a specific named instance.",
+        "Good examples: \"a staircase\", \"a potted plant\", \"an open book on a desk\", \"a red door\", \"a window with curtains\"",
+        "Bad examples: \"the Mona Lisa\", \"a first-edition Harry Potter book\", \"the original Declaration of Independence\"",
+        "",
+        "HARD objective (difficulty: \"hard\"):",
+        "Something thematically tied to this specific world but requiring more exploration.",
+        "Still must be a generic CATEGORY of thing, not a unique one-of-a-kind item.",
+        "Good examples: \"a globe\" (in a library world), \"a telescope\" (in an observatory), \"a chalkboard with equations\" (in a university), \"street art or graffiti\" (in a city)",
+        "Bad examples: \"Einstein's personal chalkboard\", \"the Hubble Space Telescope\", \"Van Gogh's Starry Night\", \"a plaque commemorating the 1636 founding\"",
+        "",
+        "RULES:",
+        "- NEVER reference specific named people, specific historical events, specific text on signs, or one-of-a-kind artifacts.",
+        "- Each objective must be visually identifiable from an AI-generated panorama image.",
+        "- objectiveLabel must be 3-8 words starting with a verb (e.g. \"Find a ...\", \"Spot a ...\").",
+        "- acceptanceCriteria must describe what visual evidence counts as a match, being somewhat lenient on similar objects.",
+        "",
+        "Return a strict JSON array with exactly 2 objects, each with keys: objectiveLabel, acceptanceCriteria, difficulty.",
+        "Example: [{\"objectiveLabel\":\"Find a potted plant\",\"acceptanceCriteria\":\"A potted plant, planter, or indoor greenery is visible\",\"difficulty\":\"medium\"},{\"objectiveLabel\":\"Spot a globe or map\",\"acceptanceCriteria\":\"A globe, world map, or cartographic display is visible\",\"difficulty\":\"hard\"}]",
     ].join("\n");
 }
 
-function presetHiddenTargetForWorld(worldPrompt: string): HiddenTarget | null {
-    const normalized = normalizePrompt(worldPrompt || "");
-    if (!normalized) return null;
-
-    if (normalized.includes("harvard")) {
-        return {
-            objectiveLabel: "Find the John Harvard statue",
-            acceptanceCriteria:
-                "The scene clearly shows a bronze seated statue in a Harvard Yard style courtyard, or a close visual equivalent.",
-        };
-    }
-
-    if (
-        normalized.includes("dorm room") ||
-        normalized.includes("dorm") ||
-        normalized.includes("college room")
-    ) {
-        return {
-            objectiveLabel: "Find a lit desk lamp",
-            acceptanceCriteria:
-                "The scene clearly shows a desk lamp turned on in a bedroom or study setup, or a close visual equivalent.",
-        };
-    }
-
-    return null;
+function pickRandomEasyGoal(): HiddenTarget {
+    return EASY_GOALS[Math.floor(Math.random() * EASY_GOALS.length)];
 }
 
 function buildTargetSatisfactionInstruction({
@@ -579,27 +608,52 @@ function extractJsonObject(text: string): string {
     return text.slice(start, end + 1);
 }
 
-function parseHiddenTarget(rawText: string): HiddenTarget {
-    const normalizedText = rawText.trim();
-    const jsonText = extractJsonObject(normalizedText) || normalizedText;
-    const parsed = JSON.parse(jsonText) as Partial<HiddenTarget>;
-    const objectiveLabel = String(parsed.objectiveLabel ?? "")
+function extractJsonArray(text: string): string {
+    const start = text.indexOf("[");
+    const end = text.lastIndexOf("]");
+    if (start === -1 || end === -1 || end <= start) return "";
+    return text.slice(start, end + 1);
+}
+
+function sanitizeGoalFields(
+    raw: Partial<HiddenTarget>,
+    fallbackDifficulty: GoalDifficulty,
+): HiddenTarget | null {
+    const objectiveLabel = String(raw.objectiveLabel ?? "")
         .trim()
         .replace(/\s+/g, " ")
         .slice(0, 80);
-    const acceptanceCriteria = String(parsed.acceptanceCriteria ?? "")
+    if (!objectiveLabel) return null;
+    const acceptanceCriteria = String(raw.acceptanceCriteria ?? "")
         .trim()
         .replace(/\s+/g, " ")
-        .slice(0, 220);
-    if (!objectiveLabel) {
-        throw new Error("Hidden target generation returned an empty objective");
+        .slice(0, 220) ||
+        "The image should clearly depict the objective or a direct visual equivalent.";
+    const diffRaw = String(raw.difficulty ?? "").toLowerCase();
+    const difficulty: GoalDifficulty =
+        diffRaw === "easy" || diffRaw === "medium" || diffRaw === "hard"
+            ? diffRaw
+            : fallbackDifficulty;
+    return { objectiveLabel, acceptanceCriteria, difficulty };
+}
+
+function parseMediumHardGoals(rawText: string): HiddenTarget[] {
+    const normalizedText = rawText.trim();
+    const arrayText = extractJsonArray(normalizedText);
+    if (arrayText) {
+        const items = JSON.parse(arrayText) as Partial<HiddenTarget>[];
+        if (Array.isArray(items)) {
+            return items
+                .map((item, i) => sanitizeGoalFields(item, i === 0 ? "medium" : "hard"))
+                .filter((g): g is HiddenTarget => g !== null);
+        }
     }
-    return {
-        objectiveLabel,
-        acceptanceCriteria:
-            acceptanceCriteria ||
-            "The image should clearly depict the objective or a direct visual equivalent.",
-    };
+    const objectText = extractJsonObject(normalizedText) || normalizedText;
+    const single = sanitizeGoalFields(
+        JSON.parse(objectText) as Partial<HiddenTarget>,
+        "medium",
+    );
+    return single ? [single] : [];
 }
 
 function parseHiddenTargetCheckResult(
@@ -1093,7 +1147,7 @@ export async function enterTarget({
     };
 }
 
-export async function generateHiddenTarget({
+export async function generateGoalSet({
     worldPrompt,
     currentContext,
     currentLocation,
@@ -1103,9 +1157,8 @@ export async function generateHiddenTarget({
     currentContext: string;
     currentLocation: string;
     signal?: AbortSignal;
-}): Promise<HiddenTarget> {
-    const preset = presetHiddenTargetForWorld(worldPrompt);
-    if (preset) return preset;
+}): Promise<GoalSet> {
+    const easyGoal = pickRandomEasyGoal();
 
     const timeoutController = new AbortController();
     const timeoutId = window.setTimeout(
@@ -1119,9 +1172,9 @@ export async function generateHiddenTarget({
         else signal.addEventListener("abort", abortFromCaller, { once: true });
     }
 
-    let response: Response;
+    let llmGoals: HiddenTarget[] = [];
     try {
-        response = await fetch(OPENAI_RESPONSES_URL, {
+        const response = await fetch(OPENAI_RESPONSES_URL, {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
@@ -1147,6 +1200,15 @@ export async function generateHiddenTarget({
             }),
             signal: timeoutController.signal,
         });
+
+        const data = (await response.json().catch(() => ({}))) as OpenAIResponse;
+        if (!response.ok) {
+            throw new Error(
+                data.error?.message || "OpenAI goal generation failed",
+            );
+        }
+        const text = extractResponseText(data);
+        llmGoals = parseMediumHardGoals(text);
     } catch (error) {
         if (timeoutController.signal.aborted) {
             throw new Error(
@@ -1159,14 +1221,14 @@ export async function generateHiddenTarget({
         signal?.removeEventListener("abort", abortFromCaller);
     }
 
-    const data = (await response.json().catch(() => ({}))) as OpenAIResponse;
-    if (!response.ok) {
-        throw new Error(
-            data.error?.message || "OpenAI hidden target generation failed",
-        );
-    }
-    const text = extractResponseText(data);
-    return parseHiddenTarget(text);
+    const medium = llmGoals.find((g) => g.difficulty === "medium") ?? llmGoals[0];
+    const hard = llmGoals.find((g) => g.difficulty === "hard") ?? llmGoals[1] ?? llmGoals[0];
+
+    const goals: GoalSet = [easyGoal];
+    if (medium) goals.push(medium);
+    if (hard && hard !== medium) goals.push(hard);
+
+    return goals;
 }
 
 export async function checkHiddenTargetSatisfied({

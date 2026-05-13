@@ -3,10 +3,11 @@ import {
   DEFAULT_PROMPT,
   checkHiddenTargetSatisfied,
   enterTarget,
-  generateHiddenTarget,
+  generateGoalSet,
+  type GoalSet,
   getWorldHistory,
   getWorldNode,
-  type HiddenTarget,
+  type GoalDifficulty,
   type HiddenTargetCheckResult,
   type NodeEntry,
   type NodePayload,
@@ -66,11 +67,22 @@ type PointerStart = {
   pointerId: number;
 };
 
+type SolvedInfo = { worldId: string; nodeId: string };
+
 type ObjectiveSession = {
-  target: HiddenTarget;
+  goals: GoalSet;
+  solvedMap: Map<string, SolvedInfo>;
   lastCheck: HiddenTargetCheckResult | null;
-  solved: boolean;
+  allSolved: boolean;
 };
+
+const DIFFICULTY_ORDER: GoalDifficulty[] = ["easy", "medium", "hard"];
+
+function difficultyBadge(d: GoalDifficulty): string {
+  if (d === "easy") return "Easy";
+  if (d === "medium") return "Medium";
+  return "Hard";
+}
 
 function getRouteWorldId() {
   const path = window.location.pathname.replace(/^\/+|\/+$/g, "");
@@ -93,17 +105,19 @@ export default function App() {
     worldId: null,
     nodeId: null,
   });
-  const [targetState, setTargetState] = useState("-");
   const [activeNode, setActiveNode] = useState<NodePayload | null>(null);
   const [viewerPanDragging, setViewerPanDragging] = useState(false);
   const [objectiveSession, setObjectiveSession] = useState<ObjectiveSession | null>(null);
-  const [solvedGoalHistoryByScene, setSolvedGoalHistoryByScene] = useState<Record<string, HiddenTarget[]>>({});
-  const [recentSolvedGoalByScene, setRecentSolvedGoalByScene] = useState<Record<string, HiddenTarget | null>>({});
   const [objectiveGenerating, setObjectiveGenerating] = useState(false);
   const [objectiveChecking, setObjectiveChecking] = useState(false);
   const [objectiveError, setObjectiveError] = useState("");
+  const [goalOverlayOpen, setGoalOverlayOpen] = useState(false);
+  const [solvedFlash, setSolvedFlash] = useState(false);
+  const solvedFlashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastAutoCheckKeyRef = useRef<string | null>(null);
   const objectiveRequestIdRef = useRef(0);
+  const enterRequestIdRef = useRef(0);
+  const [enterInFlight, setEnterInFlight] = useState(false);
   const [loadingHotspot, setLoadingHotspot] = useState<{ id: string; pitch: number; yaw: number } | null>(
     null
   );
@@ -112,16 +126,18 @@ export default function App() {
   const pointerStartRef = useRef<PointerStart | null>(null);
 
   const isWorldPage = Boolean(routeWorldId);
-  const currentSceneKey = activeNode ? `${activeNode.worldId}:${activeNode.nodeId}` : null;
-  const solvedGoalHistory = currentSceneKey ? solvedGoalHistoryByScene[currentSceneKey] ?? [] : [];
-  const recentSolvedGoal = (currentSceneKey && recentSolvedGoalByScene[currentSceneKey]) || null;
+  const solvedGoals = objectiveSession?.goals.filter(
+    (g) => objectiveSession.solvedMap.has(g.objectiveLabel)
+  ) ?? [];
+  const unsolvedGoals = objectiveSession?.goals.filter(
+    (g) => !objectiveSession.solvedMap.has(g.objectiveLabel)
+  ) ?? [];
 
   function renderPanorama(payload: NodePayload) {
     // Treat each loaded panorama as a fresh scene entry for auto goal checks.
     lastAutoCheckKeyRef.current = null;
     setActiveNode(payload);
     setWorldState({ worldId: payload.worldId, nodeId: payload.nodeId });
-    setTargetState(payload.target?.targetLabel ?? "-");
   }
 
   function navigateToWorld(worldId: string) {
@@ -130,16 +146,19 @@ export default function App() {
   }
 
   function navigateHome() {
+    enterRequestIdRef.current++;
     window.history.pushState({}, "", "/");
     setRouteWorldId(null);
     setActiveNode(null);
     setWorldState({ worldId: null, nodeId: null });
     setObjectiveSession(null);
-    setSolvedGoalHistoryByScene({});
-    setRecentSolvedGoalByScene({});
+    setGoalOverlayOpen(false);
+    setSolvedFlash(false);
     setObjectiveGenerating(false);
     setObjectiveChecking(false);
     setObjectiveError("");
+    setLoadingHotspot(null);
+    setEnterInFlight(false);
     setStatus("Ready.");
   }
 
@@ -164,8 +183,8 @@ export default function App() {
       const data = await startWorldRequest(worldPrompt);
       setPrompt(worldPrompt);
       setObjectiveSession(null);
-      setSolvedGoalHistoryByScene({});
-      setRecentSolvedGoalByScene({});
+      setGoalOverlayOpen(false);
+      setSolvedFlash(false);
       renderPanorama(data);
       navigateToWorld(data.worldId);
       setStatus("World ready. Drag to look around, click a target to enter it.");
@@ -193,24 +212,28 @@ export default function App() {
 
   async function openStoredWorld(worldId: string) {
     setObjectiveSession(null);
-    setSolvedGoalHistoryByScene({});
-    setRecentSolvedGoalByScene({});
+    setGoalOverlayOpen(false);
+    setSolvedFlash(false);
     navigateToWorld(worldId);
   }
 
   async function goBackToParent() {
     if (!worldState.worldId || !activeNode?.parentNodeId) return;
+    enterRequestIdRef.current++;
+    setLoadingHotspot(null);
     await openNode(worldState.worldId, activeNode.parentNodeId, "previous view");
   }
 
   async function enterClickedTarget(pitch: number, yaw: number) {
+    if (enterInFlight) return;
     if (!worldState.worldId || !worldState.nodeId || !activeNode) {
       setStatus("Start or open a world first.");
       return;
     }
 
+    const requestId = ++enterRequestIdRef.current;
     rememberCurrentOrientation();
-    setBusy(true);
+    setEnterInFlight(true);
     setStatus("Inspecting target...");
     try {
       const data = await enterTarget({
@@ -220,55 +243,72 @@ export default function App() {
         pitch,
         yaw,
         onProgress: (progress) => {
+          if (requestId !== enterRequestIdRef.current) return;
           setStatus(progress === "inspect" ? "Inspecting target..." : "Generating next view...");
         },
       });
+      if (requestId !== enterRequestIdRef.current) return;
       renderPanorama(data);
       setStatus(
         data.target?.targetLabel ? `Entered ${data.target.targetLabel}.` : "Entered the clicked target."
       );
     } catch (error) {
+      if (requestId !== enterRequestIdRef.current) return;
       setStatus(`Error: ${getErrorMessage(error)}`);
     } finally {
-      setLoadingHotspot(null);
-      setBusy(false);
+      if (requestId === enterRequestIdRef.current) {
+        setLoadingHotspot(null);
+      }
+      setEnterInFlight(false);
     }
   }
 
   async function checkObjective(options?: { checkKey?: string }) {
-    if (!objectiveSession) {
-      return;
-    }
-    if (!activeNode) {
-      return;
-    }
+    if (!objectiveSession || objectiveSession.allSolved || !activeNode) return;
     setObjectiveChecking(true);
     setObjectiveError("");
     if (options?.checkKey) {
       lastAutoCheckKeyRef.current = options.checkKey;
     }
+
+    const goalsToCheck = objectiveSession.goals
+      .filter((g) => !objectiveSession.solvedMap.has(g.objectiveLabel))
+      .sort((a, b) => DIFFICULTY_ORDER.indexOf(a.difficulty) - DIFFICULTY_ORDER.indexOf(b.difficulty));
+
     try {
-      const result = await checkHiddenTargetSatisfied({
-        hiddenTarget: objectiveSession.target,
-        sourceImageUrl: activeNode.imageUrl,
-        currentContext: activeNode.contextDescription || activeNode.promptUsed || prompt,
-        currentLocation: activeNode.contextLocation || prompt,
-      });
-      if (result.matched && currentSceneKey) {
-        const solvedTarget = objectiveSession.target;
-        setObjectiveSession((previous) =>
-          previous ? { ...previous, lastCheck: result, solved: true } : previous
-        );
-        setSolvedGoalHistoryByScene((previous) => ({
-          ...previous,
-          [currentSceneKey]: [...(previous[currentSceneKey] ?? []), solvedTarget],
-        }));
-        setRecentSolvedGoalByScene((previous) => ({ ...previous, [currentSceneKey]: solvedTarget }));
-        setStatus(`Goal solved: ${solvedTarget.objectiveLabel}`);
-      } else if (currentSceneKey) {
-        setObjectiveSession((previous) =>
-          previous ? { ...previous, lastCheck: result } : previous
-        );
+      for (const goal of goalsToCheck) {
+        const result = await checkHiddenTargetSatisfied({
+          hiddenTarget: goal,
+          sourceImageUrl: activeNode.imageUrl,
+          currentContext: activeNode.contextDescription || activeNode.promptUsed || prompt,
+          currentLocation: activeNode.contextLocation || prompt,
+        });
+        if (result.matched) {
+          const solvedAt = { worldId: activeNode.worldId, nodeId: activeNode.nodeId };
+          setObjectiveSession((prev) => {
+            if (!prev) return prev;
+            const nextSolved = new Map(prev.solvedMap);
+            nextSolved.set(goal.objectiveLabel, solvedAt);
+            const allSolved = prev.goals.every((g) => nextSolved.has(g.objectiveLabel));
+            return { ...prev, solvedMap: nextSolved, lastCheck: result, allSolved };
+          });
+          setStatus(`Goal solved: ${goal.objectiveLabel}`);
+          setGoalOverlayOpen(true);
+          setSolvedFlash(true);
+          if (solvedFlashTimerRef.current) clearTimeout(solvedFlashTimerRef.current);
+          solvedFlashTimerRef.current = setTimeout(() => {
+            setSolvedFlash(false);
+            setObjectiveSession((prev) => {
+              if (prev && !prev.allSolved) setGoalOverlayOpen(false);
+              return prev;
+            });
+          }, 4000);
+          break;
+        } else {
+          setObjectiveSession((prev) =>
+            prev ? { ...prev, lastCheck: result } : prev
+          );
+        }
       }
     } catch (error) {
       setObjectiveError(getErrorMessage(error));
@@ -326,14 +366,14 @@ export default function App() {
     objectiveRequestIdRef.current = requestId;
     setObjectiveGenerating(true);
     setObjectiveError("");
-    generateHiddenTarget({
+    generateGoalSet({
       worldPrompt: prompt,
       currentContext: activeNode.contextDescription || activeNode.promptUsed || prompt,
       currentLocation: activeNode.contextLocation || prompt,
     })
-      .then((target) => {
+      .then((goals) => {
         if (requestId !== objectiveRequestIdRef.current) return;
-        setObjectiveSession({ target, lastCheck: null, solved: false });
+        setObjectiveSession({ goals, solvedMap: new Map(), lastCheck: null, allSolved: false });
         lastAutoCheckKeyRef.current = null;
       })
       .catch((error: unknown) => {
@@ -448,8 +488,9 @@ export default function App() {
   }, [busy, worldState.worldId]);
 
   useEffect(() => {
-    if (!objectiveSession || objectiveSession.solved || !activeNode || objectiveChecking) return;
-    const checkKey = `${activeNode.worldId}:${activeNode.nodeId}:${objectiveSession.target.objectiveLabel}`;
+    if (!objectiveSession || objectiveSession.allSolved || !activeNode || objectiveChecking) return;
+    const unsolvedKey = unsolvedGoals.map((g) => g.objectiveLabel).join("|");
+    const checkKey = `${activeNode.worldId}:${activeNode.nodeId}:${unsolvedKey}`;
     if (lastAutoCheckKeyRef.current === checkKey) return;
     void checkObjective({ checkKey });
   }, [activeNode, objectiveChecking, objectiveSession]);
@@ -464,7 +505,7 @@ export default function App() {
   }
 
   function handlePointerDown(event: PointerEvent<HTMLDivElement>) {
-    if (event.button !== 0 || busy || !worldState.worldId || shouldIgnorePointerTarget(event.target)) {
+    if (event.button !== 0 || busy || enterInFlight || !worldState.worldId || shouldIgnorePointerTarget(event.target)) {
       pointerStartRef.current = null;
       panGripRef.current = false;
       setViewerPanDragging(false);
@@ -482,7 +523,7 @@ export default function App() {
 
   function handlePointerMove(event: PointerEvent<HTMLDivElement>) {
     const pointerStart = pointerStartRef.current;
-    if (!pointerStart || event.pointerId !== pointerStart.pointerId || busy || !worldState.worldId) return;
+    if (!pointerStart || event.pointerId !== pointerStart.pointerId || busy || enterInFlight || !worldState.worldId) return;
     if (panGripRef.current) return;
     const dx = event.clientX - pointerStart.x;
     const dy = event.clientY - pointerStart.y;
@@ -498,7 +539,7 @@ export default function App() {
     const pointerStart = pointerStartRef.current;
     pointerStartRef.current = null;
     if (!pointerStart || pointerStart.pointerId !== event.pointerId) return;
-    if (busy || !viewerRef.current || shouldIgnorePointerTarget(event.target)) return;
+    if (busy || enterInFlight || !viewerRef.current || shouldIgnorePointerTarget(event.target)) return;
 
     const dx = event.clientX - pointerStart.x;
     const dy = event.clientY - pointerStart.y;
@@ -601,72 +642,90 @@ export default function App() {
     );
   }
 
+  const goalOverlayVisible = objectiveSession && !objectiveGenerating;
+  const goalOverlayClasses = [
+    "goal-overlay",
+    goalOverlayOpen ? "open" : "",
+    solvedFlash ? "flash" : "",
+    objectiveSession?.allSolved ? "all-solved" : "",
+  ].filter(Boolean).join(" ");
+
   return (
     <main className="world-page">
       <div className="world-topbar">
-        <button className="secondary compact" disabled={busy} onClick={navigateHome}>
+        <button className="secondary compact" onClick={navigateHome}>
           Worlds
         </button>
-        <div className="goal-pill">
-          {objectiveGenerating && "Generating goal..."}
-          {objectiveError && `Goal error: ${objectiveError}`}
-          {objectiveSession && !objectiveGenerating && (
-            <>
-              <strong>Goal:</strong> {objectiveSession.target.objectiveLabel}
-              {objectiveSession.solved && <span> Solved</span>}
-              {objectiveChecking && <span> (checking...)</span>}
-            </>
-          )}
-          {!objectiveGenerating && !objectiveError && !objectiveSession && "Goal pending..."}
-        </div>
+        <span className="world-status-text">
+          {status}
+          {objectiveGenerating && " | Generating goals..."}
+          {objectiveChecking && " | Checking goals..."}
+        </span>
       </div>
 
-      <section className="world-viewer-shell">
-        {recentSolvedGoal && (
-          <div className="goal-solved-banner">
-            <strong>Goal Solved</strong>
-            <span>{recentSolvedGoal.objectiveLabel}</span>
+      <div
+        className={`panorama-wrap ${worldState.worldId && !busy && !enterInFlight ? "clickable" : ""} ${
+          viewerPanDragging ? "viewer-pan-dragging" : ""
+        }`}
+        onPointerDown={handlePointerDown}
+        onPointerMoveCapture={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={() => {
+          panGripRef.current = false;
+          setViewerPanDragging(false);
+          pointerStartRef.current = null;
+        }}
+      >
+        <div id="panorama" className={!worldState.worldId ? "empty" : ""} />
+        {!worldState.worldId && <div className="empty-message">Loading world...</div>}
+        {activeNode?.parentNodeId && (
+          <button className="viewer-back-button" onClick={goBackToParent}>
+            Back
+          </button>
+        )}
+        {goalOverlayVisible && (
+          <div className={goalOverlayClasses} aria-live="polite">
+            <button
+              type="button"
+              className="goal-overlay-bar"
+              onClick={() => setGoalOverlayOpen((prev) => !prev)}
+            >
+              <span className="goal-overlay-progress">
+                {objectiveSession.allSolved
+                  ? "All Complete!"
+                  : `Goals ${solvedGoals.length}/${objectiveSession.goals.length}`}
+              </span>
+              <span className={`goal-overlay-chevron ${goalOverlayOpen ? "up" : ""}`}>&#9660;</span>
+            </button>
+            {goalOverlayOpen && (
+              <div className="goal-overlay-list">
+                {objectiveSession.goals.map((goal) => {
+                  const solvedInfo = objectiveSession.solvedMap.get(goal.objectiveLabel);
+                  return (
+                    <button
+                      type="button"
+                      key={goal.objectiveLabel}
+                      className={`goal-item ${solvedInfo ? "goal-solved" : ""}`}
+                      disabled={!solvedInfo}
+                      onClick={() => {
+                        if (solvedInfo && worldState.worldId) {
+                          void openNode(solvedInfo.worldId, solvedInfo.nodeId, goal.objectiveLabel);
+                        }
+                      }}
+                    >
+                      <span className={`goal-difficulty goal-difficulty-${goal.difficulty}`}>
+                        {difficultyBadge(goal.difficulty)}
+                      </span>
+                      <span className="goal-label">{goal.objectiveLabel}</span>
+                      {solvedInfo && <span className="goal-check" aria-label="Solved">&#10003;</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
-        <div
-          className={`panorama-wrap ${worldState.worldId && !busy ? "clickable" : ""} ${
-            viewerPanDragging ? "viewer-pan-dragging" : ""
-          }`}
-          onPointerDown={handlePointerDown}
-          onPointerMoveCapture={handlePointerMove}
-          onPointerUp={handlePointerUp}
-          onPointerCancel={() => {
-            panGripRef.current = false;
-            setViewerPanDragging(false);
-            pointerStartRef.current = null;
-          }}
-        >
-          <div id="panorama" className={!worldState.worldId ? "empty" : ""} />
-          {!worldState.worldId && <div className="empty-message">Loading world...</div>}
-          {activeNode?.parentNodeId && (
-            <button className="viewer-back-button" disabled={busy} onClick={goBackToParent}>
-              Back
-            </button>
-          )}
-        </div>
-        <div className="world-status">
-          <span>{status}</span>
-          <span>Target: {targetState}</span>
-        </div>
-        <div className="scene-history" aria-live="polite">
-          <strong>Solved goals in this scene:</strong>
-          {solvedGoalHistory.length === 0 && <span> none yet</span>}
-          {solvedGoalHistory.length > 0 && (
-            <div className="scene-history-list">
-              {solvedGoalHistory.map((entry, index) => (
-                <span key={`${entry.objectiveLabel}-${index}`} className="scene-history-chip">
-                  {entry.objectiveLabel}
-                </span>
-              ))}
-            </div>
-          )}
-        </div>
-      </section>
+      </div>
     </main>
   );
 } 
